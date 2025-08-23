@@ -1,0 +1,74 @@
+# .github/workflows/build.yml
+name: build
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]            # <— crea release su push di un tag v*
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        platform: [ x64 ]
+        configuration: [ Release ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build ${{ matrix.platform }} ${{ matrix.configuration }}
+        run: >
+          msbuild .\ProcHunt.sln
+          /t:Build
+          /p:Configuration=${{ matrix.configuration }}
+          /p:Platform=${{ matrix.platform }}
+          /m /nologo /v:minimal
+
+      - name: Publish artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProcHunt-${{ matrix.platform }}-${{ matrix.configuration }}
+          path: |
+            **\${{ matrix.configuration }}\*.exe
+            **\${{ matrix.configuration }}\*.pdb
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Package ZIP
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          New-Item -ItemType Directory -Force -Path pkg | Out-Null
+          Get-ChildItem dist -Recurse -File -Include *.exe,*.pdb | Copy-Item -Destination pkg
+          $zip = Join-Path dist ("ProcHunt-$tag-win64.zip")
+          Compress-Archive -Path (Get-ChildItem pkg -Recurse -File | Select -Expand FullName) -DestinationPath $zip -Force
+
+      - name: List dist files (debug)
+        shell: pwsh
+        run: Get-ChildItem dist -Recurse -File | Select-Object FullName
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/*.zip
+            dist/**/*.exe
+            dist/**/*.pdb
+          generate_release_notes: true
+
